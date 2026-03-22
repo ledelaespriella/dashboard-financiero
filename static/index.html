@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Dashboard financiero para visualizar rubros del presupuesto. Suba un archivo Excel y analice costos por rubro y proveedor.">
+    <title>Dashboard Financiero | Análisis Presupuestal</title>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <!-- ===== HEADER ===== -->
+    <header class="app-header" id="app-header">
+        <div class="header-content">
+            <div class="logo-group">
+                <div class="logo-icon">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/>
+                        <path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/>
+                        <path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="app-title">Dashboard Financiero</h1>
+                    <p class="app-subtitle">Análisis Presupuestal</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button class="btn btn-ghost" id="btn-clear-data" title="Limpiar datos" style="display:none;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                        <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                    </svg>
+                    <span>Limpiar</span>
+                </button>
+                <button class="btn btn-primary" id="btn-upload-trigger" title="Cargar archivo Excel">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    <span>Cargar Excel</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- ===== MAIN CONTENT ===== -->
+    <main class="main-content">
+
+        <!-- UPLOAD ZONE (shown when no data) -->
+        <section class="upload-section" id="upload-section">
+            <div class="upload-zone" id="upload-zone">
+                <div class="upload-icon-wrapper">
+                    <svg class="upload-icon" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                        <line x1="12" y1="18" x2="12" y2="12"/>
+                        <polyline points="9 15 12 12 15 15"/>
+                    </svg>
+                </div>
+                <h2 class="upload-title">Suba su archivo Excel</h2>
+                <p class="upload-desc">Arrastre y suelte su archivo <strong>.xlsx</strong> aquí, o haga clic para seleccionar</p>
+                <p class="upload-hint">Campos requeridos: PROVEEDOR, RUBRO, COSTO MES, BASE, IVA, RETENCION, CRUCE ANTICIPOS, VALOR, OBSERVACION, TIPO, PRESUPUESTO</p>
+                <input type="file" id="file-input" accept=".xlsx,.xls" hidden>
+            </div>
+            <!-- Loading overlay -->
+            <div class="upload-loading" id="upload-loading">
+                <div class="spinner"></div>
+                <p>Procesando archivo…</p>
+            </div>
+        </section>
+
+        <!-- DASHBOARD (hidden until data loaded) -->
+        <section class="dashboard-section" id="dashboard-section" style="display:none;">
+
+            <!-- Filter Bar -->
+            <div class="filter-bar" id="filter-bar">
+                <div class="filter-group">
+                    <label for="filter-rubro" class="filter-label">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+                        </svg>
+                        Filtrar por Rubro
+                    </label>
+                    <select id="filter-rubro" class="filter-select">
+                        <option value="">Todos los Rubros</option>
+                    </select>
+                </div>
+                <div class="filter-info" id="filter-info">
+                    <span id="record-count">0</span> registros
+                </div>
+            </div>
+
+            <!-- KPI Cards -->
+            <div class="kpi-grid" id="kpi-grid">
+                <div class="kpi-card kpi-costomes" id="kpi-costomes">
+                    <div class="kpi-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v3"/>
+                        </svg>
+                    </div>
+                    <div class="kpi-data">
+                        <span class="kpi-value" id="kpi-costomes-value">$0</span>
+                        <span class="kpi-label">Total Costo Mes</span>
+                    </div>
+                </div>
+                <div class="kpi-card kpi-valor" id="kpi-valor">
+                    <div class="kpi-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+                        </svg>
+                    </div>
+                    <div class="kpi-data">
+                        <span class="kpi-value" id="kpi-valor-value">$0</span>
+                        <span class="kpi-label">Total Valor</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Charts Grid -->
+            <div class="charts-grid">
+                <!-- Row 1: Donut interactivo + Top Proveedores -->
+                <div class="chart-card" id="chart-card-donut">
+                    <div class="chart-header">
+                        <h3 class="chart-title">Distribución por Rubro</h3>
+                        <span class="chart-hint" id="donut-hint">Haga clic en un segmento para filtrar</span>
+                    </div>
+                    <div class="chart-body">
+                        <canvas id="chart-donut"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card" id="chart-card-proveedores">
+                    <div class="chart-header">
+                        <h3 class="chart-title">Top 10 Proveedores por Valor</h3>
+                    </div>
+                    <div class="chart-body">
+                        <canvas id="chart-proveedores"></canvas>
+                    </div>
+                </div>
+
+                <!-- Row 2: Stacked Bar — Top 10 Presupuesto -->
+                <div class="chart-card chart-card-full" id="chart-card-stacked">
+                    <div class="chart-header">
+                        <h3 class="chart-title">Top 10 Presupuesto: Costo Mes y Valor</h3>
+                    </div>
+                    <div class="chart-body chart-body-tall">
+                        <canvas id="chart-stacked"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Data Table -->
+            <div class="table-card" id="table-card">
+                <div class="table-header">
+                    <h3 class="chart-title">Detalle de Registros</h3>
+                    <span class="table-count" id="table-count">0 registros</span>
+                </div>
+                <div class="table-wrapper">
+                    <table class="data-table" id="data-table">
+                        <thead>
+                            <tr>
+                                <th>Proveedor</th>
+                                <th>Rubro</th>
+                                <th>Tipo</th>
+                                <th>Costo Mes</th>
+                                <th>Base</th>
+                                <th>IVA</th>
+                                <th>Retención</th>
+                                <th>Cruce Anticipos</th>
+                                <th>Valor</th>
+                                <th>Presupuesto</th>
+                                <th>Observación</th>
+                            </tr>
+                        </thead>
+                        <tbody id="table-body">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Toast notifications -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <!-- Scripts -->
+    <script src="/static/js/storage.js"></script>
+    <script src="/static/js/charts.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
