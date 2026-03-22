@@ -21,6 +21,7 @@ const ChartManager = (() => {
 
     // Callback para cuando se hace clic en el donut
     let _onDonutClick = null;
+    let _selectedRubro = null;
 
     // Configuración global de Chart.js
     Chart.defaults.color = '#94a3b8';
@@ -33,101 +34,52 @@ const ChartManager = (() => {
     Chart.defaults.responsive = true;
     Chart.defaults.maintainAspectRatio = false;
 
-    /**
-     * Formatea número como moneda COP
-     */
     function formatCurrency(value) {
         if (value == null || isNaN(value)) return '$0';
         return '$' + Math.round(value).toLocaleString('es-CO');
     }
 
-    /**
-     * Agrupa datos por un campo y suma otro campo
-     */
-    function groupBy(records, groupField, sumField) {
-        const map = {};
-        records.forEach(r => {
-            const key = r[groupField] || '(Vacío)';
-            map[key] = (map[key] || 0) + (parseFloat(r[sumField]) || 0);
-        });
-        return Object.entries(map)
-            .sort((a, b) => b[1] - a[1]);
-    }
-
-    /**
-     * Agrupa datos por un campo y suma múltiples campos
-     */
-    function groupByMultiple(records, groupField, sumFields) {
-        const map = {};
-        records.forEach(r => {
-            const key = r[groupField] || '(Vacío)';
-            if (!map[key]) map[key] = {};
-            sumFields.forEach(f => {
-                map[key][f] = (map[key][f] || 0) + (parseFloat(r[f]) || 0);
-            });
-        });
-        return Object.entries(map)
-            .sort((a, b) => {
-                const totalA = sumFields.reduce((s, f) => s + (a[1][f] || 0), 0);
-                const totalB = sumFields.reduce((s, f) => s + (b[1][f] || 0), 0);
-                return totalB - totalA;
-            });
-    }
-
-    /**
-     * Destruye un chart si existe
-     */
     function destroyChart(chart) {
         if (chart) chart.destroy();
         return null;
     }
 
-    /**
-     * Registra el callback de clic en el donut
-     */
     function onDonutClick(callback) {
         _onDonutClick = callback;
     }
 
     /**
-     * 1. Donut INTERACTIVO — Distribución por RUBRO
-     * Al hacer clic en un segmento, dispara el callback con el nombre del rubro.
-     * Si se hace clic de nuevo en el mismo rubro, limpia el filtro (null).
+     * 1. Donut Chart
+     * Data: [{rubro: str, valor: float}]
      */
-    let _selectedRubro = null;
-
-    function renderDonut(records, allRecords) {
+    function renderDonutDirect(data) {
         donutChart = destroyChart(donutChart);
-        // Usar todos los registros para el donut (para mantener visibilidad de todos los segmentos)
-        const source = allRecords || records;
-        const data = groupBy(source, 'RUBRO', 'VALOR');
         const ctx = document.getElementById('chart-donut').getContext('2d');
 
-        // Generar colores con opacidad reducida para segmentos no seleccionados
         const bgColors = data.map((d, i) => {
-            if (_selectedRubro && d[0] !== _selectedRubro) {
+            if (_selectedRubro && d.rubro !== _selectedRubro) {
                 return COLORS[i % COLORS.length] + '44'; // semi-transparente
             }
             return COLORS[i % COLORS.length];
         });
 
         const borderColors = data.map((d, i) => {
-            if (_selectedRubro && d[0] === _selectedRubro) {
+            if (_selectedRubro && d.rubro === _selectedRubro) {
                 return '#ffffff';
             }
             return 'rgba(10,14,26,0.8)';
         });
 
         const borderWidths = data.map((d) => {
-            return (_selectedRubro && d[0] === _selectedRubro) ? 3 : 2;
+            return (_selectedRubro && d.rubro === _selectedRubro) ? 3 : 2;
         });
 
         donutChart = new Chart(ctx, {
             type: 'doughnut',
             data: {
-                labels: data.map(d => d[0]),
+                labels: data.map(d => d.rubro),
                 datasets: [{
-                    data: data.map(d => d[1]),
+                    data: data.map(d => d.valor),
                     backgroundColor: bgColors,
                     borderColor: borderColors,
                     borderWidth: borderWidths,
@@ -154,13 +106,11 @@ const ChartManager = (() => {
                 onClick: (event, elements) => {
                     if (elements.length > 0) {
                         const index = elements[0].index;
-                        const clickedRubro = data[index][0];
+                        const clickedRubro = data[index].rubro;
 
                         if (_selectedRubro === clickedRubro) {
-                            // Deseleccionar: quitar filtro
                             _selectedRubro = null;
                         } else {
-                            // Seleccionar nuevo rubro
                             _selectedRubro = clickedRubro;
                         }
 
@@ -172,26 +122,24 @@ const ChartManager = (() => {
             }
         });
 
-        // Cursor pointer al pasar sobre segmentos
-        const canvas = document.getElementById('chart-donut');
-        canvas.style.cursor = 'pointer';
+        document.getElementById('chart-donut').style.cursor = 'pointer';
     }
 
     /**
      * 2. Horizontal Bar — Top 10 Proveedores
+     * Data: [{proveedor: str, valor: float}]
      */
-    function renderProveedores(records) {
+    function renderProveedoresDirect(data) {
         proveedoresChart = destroyChart(proveedoresChart);
-        const data = groupBy(records, 'PROVEEDOR', 'VALOR').slice(0, 10);
         const ctx = document.getElementById('chart-proveedores').getContext('2d');
 
         proveedoresChart = new Chart(ctx, {
             type: 'bar',
             data: {
-                labels: data.map(d => d[0].length > 25 ? d[0].substring(0, 25) + '…' : d[0]),
+                labels: data.map(d => d.proveedor.length > 25 ? d.proveedor.substring(0, 25) + '…' : d.proveedor),
                 datasets: [{
                     label: 'Valor Total',
-                    data: data.map(d => d[1]),
+                    data: data.map(d => d.valor),
                     backgroundColor: COLORS_ALPHA.slice(0, data.length),
                     borderColor: COLORS.slice(0, data.length),
                     borderWidth: 1.5,
@@ -223,31 +171,35 @@ const ChartManager = (() => {
     }
 
     /**
-     * 3. Stacked Bar — Top 10 PRESUPUESTO (Costo Mes y Valor)
+     * 3. Stacked Bar — Top 10 PRESUPUESTO
+     * Data: [{presupuesto: str, costo_mes: float, valor: float}]
      */
-    function renderStacked(records) {
+    function renderStackedDirect(data) {
         stackedChart = destroyChart(stackedChart);
-        const fields = ['COSTO MES', 'VALOR'];
-        const data = groupByMultiple(records, 'PRESUPUESTO', fields).slice(0, 10);
         const ctx = document.getElementById('chart-stacked').getContext('2d');
-
-        const fieldConfig = {
-            'COSTO MES': { bg: '#22d3ee33', border: '#22d3ee', label: 'Costo Mes' },
-            'VALOR':     { bg: '#818cf833', border: '#818cf8', label: 'Valor' },
-        };
 
         stackedChart = new Chart(ctx, {
             type: 'bar',
             data: {
-                labels: data.map(d => d[0].length > 20 ? d[0].substring(0, 20) + '…' : d[0]),
-                datasets: fields.map(f => ({
-                    label: fieldConfig[f].label,
-                    data: data.map(d => d[1][f] || 0),
-                    backgroundColor: fieldConfig[f].bg,
-                    borderColor: fieldConfig[f].border,
-                    borderWidth: 1.5,
-                    borderRadius: 3,
-                }))
+                labels: data.map(d => d.presupuesto.length > 20 ? d.presupuesto.substring(0, 20) + '…' : d.presupuesto),
+                datasets: [
+                    {
+                        label: 'Costo Mes',
+                        data: data.map(d => d.costo_mes),
+                        backgroundColor: '#22d3ee33',
+                        borderColor: '#22d3ee',
+                        borderWidth: 1.5,
+                        borderRadius: 3,
+                    },
+                    {
+                        label: 'Valor',
+                        data: data.map(d => d.valor),
+                        backgroundColor: '#818cf833',
+                        borderColor: '#818cf8',
+                        borderWidth: 1.5,
+                        borderRadius: 3,
+                    }
+                ]
             },
             options: {
                 plugins: {
@@ -271,20 +223,6 @@ const ChartManager = (() => {
         });
     }
 
-    /**
-     * Renderiza todos los gráficos.
-     * @param {Array} filteredRecords — registros filtrados (por rubro dropdown o donut)
-     * @param {Array} allRecords — todos los registros (para mantener donut completo)
-     */
-    function renderAll(filteredRecords, allRecords) {
-        renderDonut(filteredRecords, allRecords);
-        renderProveedores(filteredRecords);
-        renderStacked(filteredRecords);
-    }
-
-    /**
-     * Destruye todos los gráficos
-     */
     function destroyAll() {
         donutChart = destroyChart(donutChart);
         proveedoresChart = destroyChart(proveedoresChart);
@@ -292,22 +230,18 @@ const ChartManager = (() => {
         _selectedRubro = null;
     }
 
-    /**
-     * Obtiene el rubro seleccionado en el donut
-     */
     function getSelectedRubro() {
         return _selectedRubro;
     }
 
-    /**
-     * Resetea la selección del donut
-     */
     function clearDonutSelection() {
         _selectedRubro = null;
     }
 
     return {
-        renderAll,
+        renderDonutDirect,
+        renderProveedoresDirect,
+        renderStackedDirect,
         destroyAll,
         formatCurrency,
         onDonutClick,
