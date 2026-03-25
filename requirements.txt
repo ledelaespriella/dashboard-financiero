@@ -1,5 +1,15 @@
-fastapi==0.115.0
-uvicorn==0.30.6
-pandas==2.2.2
-openpyxl==3.1.5
-python-multipart==0.0.9
+# Backend
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.1
+python-multipart>=0.0.9
+
+# Procesamiento de Datos
+pandas>=2.2.2
+openpyxl>=3.1.2
+numpy>=2.0.0
+
+# Base de Datos
+SQLAlchemy>=2.0.30
+psycopg2-binary>=2.9.9
+pydantic-settings>=2.3.4
+python-dotenv>=1.0.1

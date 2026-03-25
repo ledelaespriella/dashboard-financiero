@@ -1,6 +1,6 @@
 /**
  * app.js — Orquestador principal del Dashboard Financiero
- * Soporta filtro interactivo por clic en donut + dropdown de RUBRO.
+ * Consume PostgreSQL vía ApiClient, soportando múltiples archivos y eliminaciones directas.
  */
 
 (() => {
@@ -13,10 +13,14 @@
     const uploadZone      = $('upload-zone');
     const uploadLoading   = $('upload-loading');
     const fileInput       = $('file-input');
+    
     const dashboardSection = $('dashboard-section');
+    const fileSelector    = $('file-selector');
+    const btnDeleteFile   = $('btn-delete-file');
     const btnUpload       = $('btn-upload-trigger');
-    const btnClear        = $('btn-clear-data');
+    const btnCloseView    = $('btn-close-view');
     const filterRubro     = $('filter-rubro');
+    
     const recordCount     = $('record-count');
     const tableBody       = $('table-body');
     const tableCount      = $('table-count');
@@ -24,15 +28,17 @@
     const donutHint       = $('donut-hint');
 
     // ── Estado ──
-    let allData = null;   // { records, summary }
+    let isUpdatingFilter = false;
+    let currentFileId = null;
 
     // ── Inicialización ──
-    function init() {
+    async function init() {
         bindEvents();
 
-        // Registrar callback del donut interactivo
-        ChartManager.onDonutClick((selectedRubro) => {
-            // Sincronizar dropdown con la selección del donut
+        ChartManager.onDonutClick(async (selectedRubro) => {
+            if (isUpdatingFilter || !currentFileId) return;
+            isUpdatingFilter = true;
+
             if (selectedRubro) {
                 filterRubro.value = selectedRubro;
                 donutHint.textContent = `Filtrando: ${selectedRubro} — clic para quitar`;
@@ -40,30 +46,22 @@
                 filterRubro.value = '';
                 donutHint.textContent = 'Haga clic en un segmento para filtrar';
             }
-            applyFilter();
+            await reloadDashboard();
+            isUpdatingFilter = false;
         });
 
-        // Intentar cargar datos desde localStorage
-        const saved = StorageManager.loadData();
-        if (saved && saved.records && saved.records.length > 0) {
-            allData = saved;
-            showDashboard();
-            toast('Datos restaurados desde sesión anterior', 'info');
-        }
+        await refreshFilesList();
     }
 
     // ── Eventos ──
     function bindEvents() {
-        // Click en la zona de upload
         uploadZone.addEventListener('click', () => fileInput.click());
         btnUpload.addEventListener('click', () => fileInput.click());
 
-        // File input change
         fileInput.addEventListener('change', e => {
             if (e.target.files.length) handleFile(e.target.files[0]);
         });
 
-        // Drag & drop
         uploadZone.addEventListener('dragover', e => {
             e.preventDefault();
             uploadZone.classList.add('drag-over');
@@ -77,23 +75,55 @@
             if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
         });
 
-        // Clear data — sin confirm() para evitar bloqueos del navegador
-        btnClear.addEventListener('click', (e) => {
+        // Evento Cerrar Vista (Mantiene BD)
+        btnCloseView.addEventListener('click', (e) => {
             e.preventDefault();
-            e.stopPropagation();
-            clearDashboard();
+            closeDashboardView();
         });
 
-        // Filtro por Rubro (dropdown)
-        filterRubro.addEventListener('change', () => {
-            // Sincronizar donut con el dropdown
+        // Evento Cambiar Historial de Archivos
+        fileSelector.addEventListener('change', async (e) => {
+            const newFileId = parseInt(e.target.value, 10);
+            if (!newFileId || isNaN(newFileId)) return;
+            currentFileId = newFileId;
             ChartManager.clearDonutSelection();
             donutHint.textContent = 'Haga clic en un segmento para filtrar';
-            applyFilter();
+            filterRubro.value = '';
+            await loadDashboardForFile(currentFileId);
+        });
+
+        // Evento Eliminar Archivo (Borra BD)
+        btnDeleteFile.addEventListener('click', async (e) => {
+            e.preventDefault();
+            if (!currentFileId) return;
+            
+            if (!confirm('¿Estás seguro de eliminar este archivo? Esto borrará permanentemente sus presupuestos de la base de datos.')) {
+                return;
+            }
+
+            try {
+                await ApiClient.deleteFile(currentFileId);
+                toast('Archivo y presupuestos eliminados con éxito.', 'success');
+                currentFileId = null;
+                await refreshFilesList(); // Si no quedan, cierra vista solos
+            } catch (err) {
+                toast(err.message, 'error');
+            }
+        });
+
+        filterRubro.addEventListener('change', async () => {
+            if (isUpdatingFilter || !currentFileId) return;
+            isUpdatingFilter = true;
+
+            ChartManager.clearDonutSelection();
+            donutHint.textContent = 'Haga clic en un segmento para filtrar';
+            await reloadDashboard();
+            
+            isUpdatingFilter = false;
         });
     }
 
-    // ── Upload ──
+    // ── Subida de Archivos ──
     async function handleFile(file) {
         if (!file.name.match(/\.xlsx?$/i)) {
             toast('Por favor seleccione un archivo .xlsx', 'error');
@@ -101,27 +131,14 @@
         }
 
         uploadLoading.classList.add('active');
-        const formData = new FormData();
-        formData.append('file', file);
 
         try {
-            const response = await fetch('/api/upload', {
-                method: 'POST',
-                body: formData,
-            });
+            const res = await ApiClient.uploadFile(file);
+            toast(`${res.total_registros} registros de ${res.filename} agregados al historial.`, 'success');
+            
+            // Refrescar lista de archivos y seleccionar el nuevo (siempre será el de id mayor o último)
+            await refreshFilesList(true); 
 
-            if (!response.ok) {
-                const err = await response.json();
-                throw new Error(err.detail || 'Error al procesar archivo');
-            }
-
-            allData = await response.json();
-
-            // Guardar en localStorage
-            StorageManager.saveData(allData);
-
-            showDashboard();
-            toast(`${allData.summary.total_registros} registros cargados correctamente`, 'success');
         } catch (err) {
             toast(err.message, 'error');
         } finally {
@@ -130,53 +147,126 @@
         }
     }
 
-    // ── Dashboard ──
-    function showDashboard() {
-        if (!allData) return;
+    // ── Historial de Archivos ──
+    async function refreshFilesList(selectLatest = false) {
+        try {
+            const files = await ApiClient.getFiles();
+            fileSelector.innerHTML = '';
+            
+            if (files.length === 0) {
+                fileSelector.innerHTML = '<option value="">No hay archivos previos</option>';
+                fileSelector.disabled = true;
+                closeDashboardView();
+                return;
+            }
 
-        uploadSection.style.display = 'none';
-        dashboardSection.style.display = 'block';
-        btnClear.style.display = 'inline-flex';
+            fileSelector.disabled = false;
+            
+            // Llenar selector
+            files.sort((a,b) => b.id - a.id).forEach(f => {
+                const opt = document.createElement('option');
+                opt.value = f.id;
+                // Formatear fecha
+                const d = new Date(f.subido_en);
+                const strDate = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                opt.textContent = `${f.filename} (${f.total_registros} reg) - ${strDate}`;
+                fileSelector.appendChild(opt);
+            });
 
-        populateFilter();
-        applyFilter();
+            // Auto-seleccionar
+            if (selectLatest) {
+                currentFileId = files[0].id; // files[0] es el más nuevo gracias al sort inverso
+            } else if (!currentFileId) {
+                currentFileId = files[0].id;
+            }
+
+            // Validar que el currentFileId aún exista en la lista
+            if (!files.find(f => f.id === currentFileId)) {
+                currentFileId = files[0].id;
+            }
+
+            fileSelector.value = currentFileId;
+            
+            // Cargar dashboard para este archive
+            await loadDashboardForFile(currentFileId);
+
+        } catch (e) {
+            console.error('Error fetching files:', e);
+            toast('Error cargando historial de archivos', 'error');
+        }
     }
 
-    function clearDashboard() {
-        // 1. Borrar localStorage
-        StorageManager.clearData();
-        // 2. Destruir gráficos
-        ChartManager.destroyAll();
-        // 3. Limpiar estado
-        allData = null;
+    // ── Dashboard Core ──
+    async function loadDashboardForFile(fileId) {
+        try {
+            const data = await ApiClient.getDashboardData(fileId);
+            if (data && data.kpis.total_registros > 0) {
+                uploadSection.style.display = 'none';
+                dashboardSection.style.display = 'block';
+                btnCloseView.style.display = 'inline-flex';
+                btnDeleteFile.style.display = 'inline-flex';
+                
+                populateFilter(data.kpis.rubros);
+                await renderAll(data, null);
+            }
+        } catch (e) {
+            toast('Error cargando los datos del archivo', 'error');
+        }
+    }
 
-        // 4. Resetear UI manualmente
+    async function reloadDashboard() {
+        if (!currentFileId) return;
+        const rubroQuery = ChartManager.getSelectedRubro() || filterRubro.value || null;
+        try {
+            const data = await ApiClient.getDashboardData(currentFileId, rubroQuery);
+            await renderAll(data, rubroQuery);
+        } catch (e) {
+            toast('Error recargando filtro de dashboard', 'error');
+        }
+    }
+
+    async function renderAll(data, rubroQuery = null) {
+        animateKPI('kpi-costomes-value', data.kpis.total_costo_mes);
+        animateKPI('kpi-valor-value', data.kpis.total_valor);
+        
+        ChartManager.renderDonutDirect(data.donut);
+        ChartManager.renderProveedoresDirect(data.proveedores);
+        ChartManager.renderStackedDirect(data.stacked);
+
+        recordCount.textContent = data.kpis.total_registros;
+        try {
+            const records = await ApiClient.getRecords(currentFileId, rubroQuery);
+            renderTable(records);
+        } catch (e) {
+            console.error('Error fetching records for table', e);
+        }
+    }
+
+    function closeDashboardView() {
+        ChartManager.destroyAll();
         dashboardSection.style.display = 'none';
         uploadSection.style.display = '';
         uploadSection.removeAttribute('style');
-        btnClear.style.display = 'none';
+        
+        btnCloseView.style.display = 'none';
+        
         filterRubro.innerHTML = '<option value="">Todos los Rubros</option>';
         tableBody.innerHTML = '';
         recordCount.textContent = '0';
         tableCount.textContent = '0 registros';
-
-        // 5. Resetear KPIs
-        ['kpi-costomes-value', 'kpi-valor-value'].forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.textContent = '$0';
-        });
-
-        // 6. Resetear hint del donut
         if (donutHint) donutHint.textContent = 'Haga clic en un segmento para filtrar';
 
-        toast('Datos eliminados correctamente', 'success');
+        // Opcional: no nullificamos currentFileId para que si vuelven a subir, siga allí o cambie al nuevo,
+        // pero limpiar permite forzar a ver la zona de carga de forma nativa.
+        toast('Vista cerrada. El archivo sigue en la base de datos.', 'info');
     }
 
-    // ── Filtros ──
-    function populateFilter() {
+    // ── Funciones Auxiliares ──
+    function populateFilter(rubros) {
+        const currentVal = filterRubro.value;
         filterRubro.innerHTML = '<option value="">Todos los Rubros</option>';
-        if (allData.summary.rubros) {
-            allData.summary.rubros.forEach(r => {
+        if (rubros && rubros.length) {
+            rubros.forEach(r => {
                 if (r && r.trim()) {
                     const opt = document.createElement('option');
                     opt.value = r;
@@ -184,38 +274,8 @@
                     filterRubro.appendChild(opt);
                 }
             });
+            if (currentVal) filterRubro.value = currentVal;
         }
-    }
-
-    function applyFilter() {
-        // Determinar qué rubro filtrar (prioridad: donut > dropdown)
-        const donutRubro = ChartManager.getSelectedRubro();
-        const dropdownRubro = filterRubro.value;
-        const activeRubro = donutRubro || dropdownRubro;
-
-        let filtered = allData.records;
-        if (activeRubro) {
-            filtered = filtered.filter(r => r.RUBRO === activeRubro);
-        }
-
-        updateKPIs(filtered);
-        // Pasar todos los registros como segundo argumento para que el donut siempre los muestre todos
-        ChartManager.renderAll(filtered, allData.records);
-        renderTable(filtered);
-        recordCount.textContent = filtered.length;
-    }
-
-    // ── KPIs (solo Costo Mes y Valor) ──
-    function updateKPIs(records) {
-        let totalCostoMes = 0;
-        let totalValor = 0;
-        records.forEach(r => {
-            totalCostoMes += parseFloat(r['COSTO MES']) || 0;
-            totalValor    += parseFloat(r.VALOR) || 0;
-        });
-
-        animateKPI('kpi-costomes-value', totalCostoMes);
-        animateKPI('kpi-valor-value', totalValor);
     }
 
     function animateKPI(elementId, targetValue) {
@@ -224,11 +284,10 @@
         const formatted = ChartManager.formatCurrency(targetValue);
         el.textContent = formatted;
         el.style.animation = 'none';
-        el.offsetHeight; // trigger reflow
+        el.offsetHeight; // rf
         el.style.animation = 'countUp 0.4s ease-out';
     }
 
-    // ── Tabla ──
     function renderTable(records) {
         tableBody.innerHTML = '';
         tableCount.textContent = `${records.length} registros`;
@@ -237,24 +296,23 @@
         records.forEach(r => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${escapeHtml(r.PROVEEDOR || '')}</td>
-                <td>${escapeHtml(r.RUBRO || '')}</td>
-                <td>${escapeHtml(r.TIPO || '')}</td>
-                <td class="numeric">${ChartManager.formatCurrency(r['COSTO MES'])}</td>
-                <td class="numeric">${ChartManager.formatCurrency(r.BASE)}</td>
-                <td class="numeric">${ChartManager.formatCurrency(r.IVA)}</td>
-                <td class="numeric">${ChartManager.formatCurrency(r.RETENCION)}</td>
-                <td class="numeric">${ChartManager.formatCurrency(r['CRUCE ANTICIPOS'])}</td>
-                <td class="numeric">${ChartManager.formatCurrency(r.VALOR)}</td>
-                <td>${escapeHtml(String(r.PRESUPUESTO || ''))}</td>
-                <td>${escapeHtml(r.OBSERVACION || '')}</td>
+                <td>${escapeHtml(r.proveedor || '')}</td>
+                <td>${escapeHtml(r.rubro || '')}</td>
+                <td>${escapeHtml(r.tipo || '')}</td>
+                <td class="numeric">${ChartManager.formatCurrency(r.costo_mes)}</td>
+                <td class="numeric">${ChartManager.formatCurrency(r.base)}</td>
+                <td class="numeric">${ChartManager.formatCurrency(r.iva)}</td>
+                <td class="numeric">${ChartManager.formatCurrency(r.retencion)}</td>
+                <td class="numeric">${ChartManager.formatCurrency(r.cruce_anticipos)}</td>
+                <td class="numeric">${ChartManager.formatCurrency(r.valor)}</td>
+                <td>${escapeHtml(String(r.presupuesto_cat || ''))}</td>
+                <td>${escapeHtml(r.observacion || '')}</td>
             `;
             fragment.appendChild(tr);
         });
         tableBody.appendChild(fragment);
     }
 
-    // ── Helpers ──
     function escapeHtml(str) {
         const div = document.createElement('div');
         div.textContent = str;
@@ -271,6 +329,5 @@
         }, 4000);
     }
 
-    // ── Arranque ──
     document.addEventListener('DOMContentLoaded', init);
 })();
